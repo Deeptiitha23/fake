@@ -1,67 +1,55 @@
-The recommended git tool is: NONE
-No credentials specified
- > git rev-parse --resolve-git-dir /var/lib/jenkins/workspace/task1/.git # timeout=10
-Fetching changes from the remote Git repository
- > git config remote.origin.url https://github.com/Deeptiitha23/terraform-3315.git # timeout=10
-Fetching upstream changes from https://github.com/Deeptiitha23/terraform-3315.git
- > git --version # timeout=10
- > git --version # 'git version 2.43.0'
- > git fetch --tags --force --progress -- https://github.com/Deeptiitha23/terraform-3315.git +refs/heads/*:refs/remotes/origin/* # timeout=10
- > git rev-parse refs/remotes/origin/main^{commit} # timeout=10
-Checking out Revision 0b5ec00cc50baa26829abc829966180b67e66d26 (refs/remotes/origin/main)
- > git config core.sparsecheckout # timeout=10
- > git checkout -f 0b5ec00cc50baa26829abc829966180b67e66d26 # timeout=10
- > git branch -a -v --no-abbrev # timeout=10
- > git branch -D main # timeout=10
- > git checkout -b main 0b5ec00cc50baa26829abc829966180b67e66d26 # timeout=10
-Commit message: "Update main.tf"
- > git rev-list --no-walk 0b5ec00cc50baa26829abc829966180b67e66d26 # timeout=10
-[Pipeline] git
-The recommended git tool is: NONE
-No credentials specified
- > git rev-parse --resolve-git-dir /var/lib/jenkins/workspace/task1/.git # timeout=10
-Fetching changes from the remote Git repository
- > git config remote.origin.url https://github.com/Deeptiitha23/ansible.git # timeout=10
-Fetching upstream changes from https://github.com/Deeptiitha23/ansible.git
- > git --version # timeout=10
- > git --version # 'git version 2.43.0'
- > git fetch --tags --force --progress -- https://github.com/Deeptiitha23/ansible.git +refs/heads/*:refs/remotes/origin/* # timeout=10
- > git rev-parse refs/remotes/origin/main^{commit} # timeout=10
-Checking out Revision 1db512e954f5b94638681aa94e062aadee7d287b (refs/remotes/origin/main)
- > git config core.sparsecheckout # timeout=10
- > git checkout -f 1db512e954f5b94638681aa94e062aadee7d287b # timeout=10
- > git branch -a -v --no-abbrev # timeout=10
- > git branch -D main # timeout=10
- > git checkout -b main 1db512e954f5b94638681aa94e062aadee7d287b # timeout=10
-Commit message: "Create playbook.yml"
- > git rev-list --no-walk 1db512e954f5b94638681aa94e062aadee7d287b # timeout=10
-[Pipeline] }
-[Pipeline] // stage
-[Pipeline] stage
-[Pipeline] { (Terraform Apply)
-[Pipeline] script
-[Pipeline] {
-[Pipeline] sh
-+ terraform init
-/var/lib/jenkins/workspace/task1@tmp/durable-a58178fc/script.sh.copy: 1: terraform: not found
-[Pipeline] }
-[Pipeline] // script
-[Pipeline] }
-[Pipeline] // stage
-[Pipeline] stage
-[Pipeline] { (Update Ansible Inventory)
-Stage "Update Ansible Inventory" skipped due to earlier failure(s)
-[Pipeline] getContext
-[Pipeline] }
-[Pipeline] // stage
-[Pipeline] stage
-[Pipeline] { (Run Ansible Playbook)
-Stage "Run Ansible Playbook" skipped due to earlier failure(s)
-[Pipeline] getContext
-[Pipeline] }
-[Pipeline] // stage
-[Pipeline] }
-[Pipeline] // node
-[Pipeline] End of Pipeline
-ERROR: script returned exit code 127
-Finished: FAILURE
+pipeline {
+    agent any
+
+    tools {
+        // Define Ansible tool installation
+        ansible 'ansible'
+
+        // Define Terraform tool installation
+        terraform 'terraform'
+    }
+
+    stages {
+        stage('Clone Repositories') {
+            steps {
+                git branch: 'main', url: 'https://github.com/Deeptiitha23/terraform-3315.git'
+                git branch: 'main', url: 'https://github.com/Deeptiitha23/ansible.git'
+            }
+        }
+
+        stage('Terraform Apply') {
+            steps {
+                script {
+                    sh 'terraform init'
+                    sh 'terraform apply -auto-approve'
+                }
+            }
+        }
+
+        stage('Update Ansible Inventory') {
+            steps {
+                script {
+                    def privateIps = sh(script: "terraform output -json private_ips", returnStdout: true).trim()
+                    def ips = readJSON(text: privateIps)
+
+                    writeFile file: "inventory.ini", text: generateInventory(ips)
+                }
+            }
+        }
+
+        stage('Run Ansible Playbook') {
+            steps {
+                script {
+                    sh 'ansible-playbook -i inventory.ini playbook.yml'
+                }
+            }
+        }
+    }
+}
+
+def generateInventory(privateIps) {
+    def engine = new groovy.text.SimpleTemplateEngine()
+    def template = new File("inventory.ini").text
+    def binding = [private_ips: privateIps]
+    return engine.createTemplate(template).make(binding).toString()
+}
