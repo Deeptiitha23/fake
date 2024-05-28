@@ -1,0 +1,68 @@
+pipeline {
+    agent any
+
+    environment {
+        // Define directories for Terraform and Ansible
+        TERRAFORM_DIR = "${WORKSPACE}/terraform"
+        ANSIBLE_DIR = "${WORKSPACE}/ansible"
+        // Define your GitHub repositories
+        TERRAFORM_REPO = "https://github.com/your_username/terraform-repo.git"
+        ANSIBLE_REPO = "https://github.com/your_username/ansible-repo.git"
+    }
+
+    stages {
+        stage('Clone Repositories') {
+            steps {
+                // Clone the Terraform repository
+                dir(TERRAFORM_DIR) {
+                    git branch: 'main', url: "${TERRAFORM_REPO}"
+                }
+                // Clone the Ansible repository
+                dir(ANSIBLE_DIR) {
+                    git branch: 'main', url: "${ANSIBLE_REPO}"
+                }
+            }
+        }
+
+        stage('Terraform Apply') {
+            steps {
+                script {
+                    dir(TERRAFORM_DIR) {
+                        sh 'terraform init'
+                        sh 'terraform apply -auto-approve'
+                    }
+                }
+            }
+        }
+
+        stage('Update Ansible Inventory') {
+            steps {
+                script {
+                    // Capture the Terraform output
+                    def privateIps = sh(script: "cd ${TERRAFORM_DIR} && terraform output -json private_ips", returnStdout: true).trim()
+                    def ips = readJSON(text: privateIps)
+
+                    // Generate the Ansible inventory file
+                    writeFile file: "${ANSIBLE_DIR}/inventory", text: generateInventory(ips)
+                }
+            }
+        }
+
+        stage('Run Ansible Playbook') {
+            steps {
+                script {
+                    dir(ANSIBLE_DIR) {
+                        sh 'ansible-playbook -i inventory your_playbook.yml'
+                    }
+                }
+            }
+        }
+    }
+}
+
+def generateInventory(privateIps) {
+    def engine = new groovy.text.SimpleTemplateEngine()
+    def template = new File("${env.ANSIBLE_DIR}/inventory.tpl").text
+    def binding = [private_ips: privateIps]
+    return engine.createTemplate(template).make(binding).toString()
+}
