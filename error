@@ -1,27 +1,39 @@
+
 pipeline {
     agent any
 
-    tools {
-        // Define Ansible tool installation
-        ansible 'ansible'
-
-        // Define Terraform tool installation
-        terraform 'terraform'
+    environment {
+        // Define directories for Terraform and Ansible
+        TERRAFORM_DIR = "${WORKSPACE}/terraform"
+        ANSIBLE_DIR = "${WORKSPACE}/ansible"
+        // Define your GitHub repositories
+        TERRAFORM_REPO = "https://github.com/Diyauddin-Shaik/Terraform.git"
+        ANSIBLE_REPO = "https://github.com/Diyauddin-Shaik/ansible.git"
     }
 
     stages {
         stage('Clone Repositories') {
             steps {
-                git branch: 'main', url: 'https://github.com/Deeptiitha23/terraform-3315.git'
-                git branch: 'main', url: 'https://github.com/Deeptiitha23/ansible.git'
+                // Clone the Terraform repository
+                dir(TERRAFORM_DIR) {
+                    git branch: 'main', url: "https://github.com/Diyauddin-Shaik/Terraform.git"
+                }
+                // Clone the Ansible repository
+                dir(ANSIBLE_DIR) {
+                    git branch: 'main', url: "https://github.com/Diyauddin-Shaik/ansible.git"
+                }
             }
         }
 
         stage('Terraform Apply') {
             steps {
                 script {
-                    sh 'terraform init'
-                    sh 'terraform apply -auto-approve'
+                    dir(TERRAFORM_DIR) {
+                        sh 'cd Test/ && terraform init'
+                        sh 'ls'
+                        sh 'pwd'
+                        sh 'cd Test/ && terraform apply -auto-approve'
+                    }
                 }
             }
         }
@@ -29,10 +41,12 @@ pipeline {
         stage('Update Ansible Inventory') {
             steps {
                 script {
-                    def privateIps = sh(script: "terraform output -json private_ips", returnStdout: true).trim()
+                    // Capture the Terraform output
+                    def privateIps = sh(script: "cd ${TERRAFORM_DIR} && terraform output -json private_ips", returnStdout: true).trim()
                     def ips = readJSON(text: privateIps)
 
-                    writeFile file: "inventory.ini", text: generateInventory(ips)
+                    // Generate the Ansible inventory file
+                    writeFile file: "${ANSIBLE_DIR}/inventory.ini", text: generateInventory(ips)
                 }
             }
         }
@@ -40,7 +54,9 @@ pipeline {
         stage('Run Ansible Playbook') {
             steps {
                 script {
-                    sh 'ansible-playbook -i inventory.ini playbook.yml'
+                    dir(ANSIBLE_DIR) {
+                        sh 'ansible-playbook -i inventory your_playbook.yml'
+                    }
                 }
             }
         }
@@ -49,7 +65,7 @@ pipeline {
 
 def generateInventory(privateIps) {
     def engine = new groovy.text.SimpleTemplateEngine()
-    def template = new File("inventory.ini").text
+    def template = new File("${env.ANSIBLE_DIR}/inventory.tpl").text
     def binding = [private_ips: privateIps]
     return engine.createTemplate(template).make(binding).toString()
 }
