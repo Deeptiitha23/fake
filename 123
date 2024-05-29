@@ -40,10 +40,18 @@ pipeline {
                 script {
                     // Capture the Terraform output
                     def privateIps = sh(script: "cd ${TERRAFORM_DIR} && terraform output -json private_ips", returnStdout: true).trim()
-                    def ips = readJSON(text: privateIps)
-
+                    echo "$privateIps"
+                   // def ips = readJSON text: privateIps
+                   // echo "$ips"
+                    // sh """
+                    //     echo '[master]' > ${ANSIBLE_DIR}/inventory
+                    //     echo $(echo '${privateIps}' jq -r '.master') >> ${ANSIBLE_DIR}/inventory
+                    //     echo '' >> ${ANSIBLE_DIR}/inventory
+                    //     echo '[worker]' > ${ANSIBLE_DIR}/inventory
+                    //     echo $(echo '${privateIps}' jq -r '.worker') >> ${ANSIBLE_DIR}/inventory
+                    //     """
                     // Generate the Ansible inventory file
-                    writeFile file: "${ANSIBLE_DIR}/inventory.ini", text: generateInventory(ips)
+                    writeFile file: "${ANSIBLE_DIR}/inventory", text: generateInventory(ips)
                 }
             }
         }
@@ -52,7 +60,7 @@ pipeline {
             steps {
                 script {
                     dir(ANSIBLE_DIR) {
-                        sh 'ansible-playbook -i inventory.ini playbook.yml'
+                        sh 'ansible-playbook -i inventory playbook.yml'
                     }
                 }
             }
@@ -62,7 +70,7 @@ pipeline {
 
 def generateInventory(privateIps) {
     def engine = new groovy.text.SimpleTemplateEngine()
-    def template = new File("${env.ANSIBLE_DIR}/inventory.ini").text
+    def template = new File("${env.ANSIBLE_DIR}/inventory.tpl").text
     def binding = [private_ips: privateIps]
     return engine.createTemplate(template).make(binding).toString()
 }
