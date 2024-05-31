@@ -1,1 +1,325 @@
+Automation Codes for Kubernetes Cluster Creation and Deployment
+1. Terraform Configuration
+The Terraform configuration is responsible for defining and provisioning the necessary infrastructure resources on AWS. This includes creating EC2 instances for the master and worker nodes of the Kubernetes cluster. 
+Providers:
+provider "aws" {
+    alias   = "insta1"
+    region  = "us-east-1"
+}
+
+provider "aws" {
+    alias   = "insta2"
+    region  = "us-east-1"
+}
+This section specifies the AWS providers used for creating the instances. The alias attribute differentiates between the providers, allowing the configuration to manage resources across different sets of AWS credentials or regions if needed.
+Resource Definitions:
+resource "aws_instance" "example1" {
+    ami             = "ami-04b70fa74e45c3917"
+    instance_type   = "t2.large"
+    provider        = aws.insta1
+    key_name        = "test"
+    tags = {
+        Name = "master4"
+    }
+}
+
+resource "aws_instance" "example2" {
+    ami             = "ami-04b70fa74e45c3917"
+    instance_type   = "t2.medium"
+    provider        = aws.insta2
+    key_name        = "test"
+    tags = {
+        Name = "worker4"
+    }
+}
+Here, two EC2 instances are defined:
+example1: This instance acts as the master node with a t2.large instance type.
+example2: This instance acts as the worker node with a t2.medium instance type.
+Both instances use the same AMI and key pair but are managed by different AWS providers (insta1 and insta2) to potentially distribute the instances across different availability zones or accounts.
+
+Output Values:
+output "private_ips" {
+    value = {
+        master = aws_instance.example1.private_ip
+        worker = aws_instance.example2.private_ip
+    }
+}
+
+The output block captures and outputs the private IP addresses of the master and worker instances. These IP addresses are essential for configuring the Ansible inventory file, which Ansible uses to connect to and manage these instances.
+
+2. Ansible Playbook
+This Ansible playbook automates the setup and configuration of a Kubernetes cluster across multiple hosts (master and worker nodes). It installs necessary software, configures system settings, and initializes the Kubernetes cluster.
+The playbook is divided into three main sections:
+Common setup tasks for all hosts
+Master node-specific configuration
+Worker node-specific configuration
+Common Setup Tasks:
+
+- hosts: all
+  become: yes
+  tasks:
+    - name: Install required packages
+      apt:
+        name: "{{ packages }}"
+        state: present
+      vars:
+        packages:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - software-properties-common
+          - gnupg
+
+    - name: Add Docker GPG key
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+
+    - name: Add Docker APT repository
+      apt_repository:
+        repo: deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable
+        state: present
+
+    - name: Install Docker
+      apt:
+        name: docker-ce
+        state: present
+
+    - name: Add Kubernetes GPG key
+      apt_key:
+        url: https://packages.cloud.google.com/apt/doc/apt-key.gpg
+        state: present
+
+    - name: Add Kubernetes APT key
+      get_url:
+        url: https://pkgs.k8s.io/core:/stable:/v1.29/deb/Release.key
+        dest: /etc/apt/keyrings/kubernetes-apt-keyring.asc
+        mode: '0644'
+        force: true
+
+    - name: Add Kubernetes APT repository
+      apt_repository:
+        repo: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.asc] https://pkgs.k8s.io/core:/stable:/v1.28/deb/ /"
+        state: present
+
+    - name: Install Kubernetes packages
+      apt:
+        name: "{{ kubernetes_packages }}"
+        state: present
+      vars:
+        kubernetes_packages:
+          - kubelet
+          - kubeadm
+          - kubectl
+
+    - name: Hold Kubernetes packages
+      apt:
+        name: "{{ kubernetes_packages }}"
+        state: present
+      vars:
+        kubernetes_packages:
+          - kubelet
+          - kubeadm
+          - kubectl
+
+    - name: Disable swap
+      command: swapoff -a
+
+    - name: Ensure swap is disabled on reboot
+      replace:
+        path: /etc/fstab
+        regexp: '^(.*\sswap\s.*)$'
+        replace: '# \1'
+
+    - name: Install containerd
+      apt:
+        name: containerd
+        state: present
+
+    - name: Configure containerd
+      copy:
+        content: |
+          [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc.options]
+            SystemdCgroup = true
+        dest: /etc/containerd/config.toml
+
+    - name: Restart containerd
+      service:
+        name: containerd
+        state: restarted
+        enabled: yes
+This section installs necessary packages and tools (Docker, Kubernetes, containerd) on both the master and worker nodes. It also performs essential configurations such as disabling swap and setting up containerd for Kubernetes.
+Master Node Configuration:
+- hosts: master
+  become: yes
+  tasks:
+    - name: Ports disable
+      shell: |
+        for port in 6443 10250 10259 10257 2379 2380; do
+          fuser -k ${port}/tcp || true
+        done
+      args:
+        executable: /bin/bash
+
+    - name: Reset previous kubeadm
+      command: kubeadm reset -f
+
+    - name: Initialize Kubernetes cluster
+      command: kubeadm init --pod-network-cidr=10.244.0.0/16
+      register: kubeadm_init_output
+
+    - name: Create .kube directory
+      file:
+        path: /home/{{ ansible_user }}/.kube
+        state: directory
+        mode: '0755'
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+
+    - name: Copy admin.conf to user's kube config
+      command: cp /etc/kubernetes/admin.conf /home/{{ ansible_user }}/.kube/config
+
+    - name: Change permissions for kube config
+      file:
+        path: /home/{{ ansible_user }}/.kube/config
+        state: file
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0644'
+
+    - name: Set kubeconfig env
+      shell: echo 'export KUBECONFIG=/home/{{ ansible_user }}/.kube/config' >> /home/{{ ansible_user }}/.bashrc
+
+    - name: Wait for the Kubernetes API server to be ready
+      shell: |
+        export KUBECONFIG=/home/{{ ansible_user }}/.kube/config
+        for i in {1..10}; do
+          if kubectl get nodes; then
+            break
+          else
+            sleep 10
+          fi
+        done
+      environment:
+        KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+      args:
+        executable: /bin/bash
+
+    - name: Install Flannel CNI
+      command: kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/master/Documentation/kube-flannel.yml
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: command
+      command: kubeadm token create --print-join-command 
+      register: join_command_output
+
+This section configures the master node. It disables any ports that might conflict with Kubernetes, resets any previous kubeadm configurations, and initializes the Kubernetes cluster with a specific pod network CIDR. It then sets up the kubeconfig for administrative tasks and installs the Flannel CNI plugin for networking. Finally, it generates the join command for the worker nodes to connect to the cluster.
+
+
+Worker Node Configuration:
+
+- hosts: worker
+  become: yes
+  tasks:
+    - name: Reset previous kubeadm configuration
+      command: kubeadm reset -f
+      ignore_errors: yes
+
+    - name: Join the cluster
+      command: "{{ hostvars['master'].join_command_output.stdout }}"
+
+The worker nodes reset any previous kubeadm configurations and use the join command from the master node to integrate into the Kubernetes cluster, completing the setup.
+
+
+Jenkins Pipeline
+This Jenkins pipeline script automates the deployment and configuration of a Kubernetes cluster using Terraform and Ansible. The script includes stages for cloning repositories, applying Terraform configurations, updating the Ansible inventory, and running Ansible playbooks. Below is an elaborated explanation of each part of the script.
+Jenkins Pipeline Structure
+The pipeline is structured into the following stages:
+Clone Repositories
+Terraform Apply
+Update Ansible Inventory
+Run Ansible Playbook
+
+Pipeline Definition:
+pipeline {
+    agent any
+
+    environment {
+        // Define directories for Terraform and Ansible
+        TERRAFORM_DIR = "${WORKSPACE}/terraform"
+        ANSIBLE_DIR = "${WORKSPACE}/ansible"
+        // Define your GitHub repositories
+        TERRAFORM_REPO = "https://github.com/Deeptiitha23/jenkins.git"
+        ANSIBLE_REPO = "https://github.com/Deeptiitha23/jenkins.git"
+    }
+
+    stages {
+        stage('Clone Repositories') {
+            steps {
+                // Clone the Terraform repository
+                dir(TERRAFORM_DIR) {
+                    git branch: 'main', url: TERRAFORM_REPO
+                }
+                // Clone the Ansible repository
+                dir(ANSIBLE_DIR) {
+                    git branch: 'main', url: ANSIBLE_REPO
+                }
+            }
+        }
+
+        stage('Terraform Apply') {
+            steps {
+                script {
+                    dir(TERRAFORM_DIR) {
+                        sh 'terraform init'
+                        sh 'terraform apply -auto-approve'
+                    }
+                }
+            }
+        }
+
+        stage('Update Ansible Inventory') {
+            steps {
+                script {
+                    // Capture the Terraform output
+                    def privateIps = sh(script: "cd ${TERRAFORM_DIR} && terraform output -json private_ips", returnStdout: true).trim()
+                    echo "Private IPs: $privateIps"
+                    // Parse private IPs as JSON
+                    def ips = readJSON text: privateIps
+                    echo "Parsed IPs: $ips"
+                    // Generate the Ansible inventory file
+                    generateInventory(ips)
+                }
+            }
+        }
+
+        stage('Run Ansible Playbook') {
+            steps {
+                script {
+                    dir(ANSIBLE_DIR) {
+                        sh 'ansible-playbook -i inventory.ini playbook.yml'
+                    }
+                }
+            }
+        }
+
+    }
+}
+
+def generateInventory(privateIps) {
+    // Generate inventory content
+    def inventoryContent = """
+        [master]
+        master ansible_host=${privateIps.master ?: ''} ansible_user=ubuntu
+        
+        [worker]
+        worker ansible_host=${privateIps.worker ?: ''} ansible_user=ubuntu
+        
+        [all:vars]
+        ansible_python_interpreter=/usr/bin/python3
+    """
+    // Write inventory content to file
+    writeFile file: "${ANSIBLE_DIR}/inventory.ini", text: inventoryContent
+}
 
